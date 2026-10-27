@@ -30,7 +30,11 @@ DEFAULT_SEARCH_URL = (
     "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22(And.Hidden.N._.(Or.Separation.F._.Separation.B.)_.SellType.%EC%9D%BC%EB%B0%98._.(C.CarType.Y._.(C.Manufacturer.%EA%B8%B0%EC%95%84._.(C.ModelGroup.%EC%8A%A4%ED%8C%85%EC%96%B4._.(C.Model.%EC%8A%A4%ED%8C%85%EC%96%B4%20%EB%A7%88%EC%9D%B4%EC%8A%A4%ED%84%B0._.(Or.(C.BadgeGroup.%EA%B0%80%EC%86%94%EB%A6%B0%202WD._.(Or.Badge.3_.3%20GT._.Badge.3_.3%20GT%20%EB%A7%88%EC%8A%A4%ED%84%B0%EC%A6%88%20%ED%84%B0%EB%B3%B4%20%ED%8C%A8%ED%82%A4%EC%A7%80._.Badge.3_.3%20GT%20%EC%95%84%ED%81%AC%EB%A1%9C%20%EC%97%90%EB%94%94%EC%85%98._.Badge.3_.3%20GT%20%ED%8A%B8%EB%A6%AC%EB%B7%B0%ED%8A%B8%20%EC%97%90%EB%94%94%EC%85%98.))_.(C.BadgeGroup.%EA%B0%80%EC%86%94%EB%A6%B0%204WD._.(Or.Badge.3_.3%20GT%20AWD%20%ED%8A%B8%EB%A6%AC%EB%B7%B0%ED%8A%B8%20%EC%97%90%EB%94%94%EC%85%98._.Badge.3_.3%20GT%20AWD%20%EC%95%84%ED%81%AC%EB%A1%9C%20%EC%97%90%EB%94%94%EC%85%98._.Badge.3_.3%20GT%20AWD%20%EB%A7%88%EC%8A%A4%ED%84%B0%EC%A6%88%20%ED%84%B0%EB%B3%B4%20%ED%8C%A8%ED%82%A4%EC%A7%80._.Badge.3_.3%20GT%20AWD.))))))))%22%2C%22title%22%3A%22Kia%20Stinger%20Meister(20~23%EB%85%84)%22%2C%22toggle%22%3A%7B%22modelGroup%22%3A1%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobilePriceAsc%22%7D"
 )
 
-API_URL = "https://api.encar.com/search/car/list/general"
+API_URLS = [
+    "https://api.encar.com/search/car/list/premium",
+    "https://api.encar.com/search/car/list/general",
+    "https://api.encar.com/search/car/list/mobile",
+]
 PAGE_SIZE = 50
 MAX_PAGES = 20
 PHOTO_BASE = "https://ci.encar.com/carpicture"
@@ -93,6 +97,32 @@ def http_get_json(url, headers=None, timeout=30):
         return json.loads(r.read().decode("utf-8"))
 
 
+def get_with_retry(url, headers):
+    for attempt in range(3):
+        try:
+            return http_get_json(url, headers)
+        except urllib.error.HTTPError:
+            raise  # 4xx/5xx: nie ma sensu ponawiać tego samego adresu
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt == 2:
+                raise RuntimeError(f"Nie udało się połączyć z Encar: {e}")
+            time.sleep(5 * (attempt + 1))
+
+
+def find_endpoint(params, headers):
+    """Encar nie dokumentuje API, więc próbujemy znanych wariantów adresu."""
+    errors = []
+    for url in API_URLS:
+        try:
+            data = get_with_retry(f"{url}?{params}", headers)
+            if isinstance(data, dict) and "SearchResults" in data:
+                return url, data
+            errors.append(f"{url}: brak SearchResults w odpowiedzi")
+        except urllib.error.HTTPError as e:
+            errors.append(f"{url}: HTTP {e.code}")
+    raise RuntimeError("Żaden adres Encar nie zadziałał:\n" + "\n".join(errors))
+
+
 def fetch_listings(action):
     headers = {
         "User-Agent": UA,
@@ -101,21 +131,18 @@ def fetch_listings(action):
         "Origin": "https://car.encar.com",
     }
     cars, total = [], None
+    api_url = None
     for page in range(MAX_PAGES):
         params = urllib.parse.urlencode({
             "count": "true",
             "q": action,
             "sr": f"|ModifiedDate|{page * PAGE_SIZE}|{PAGE_SIZE}",
         }, quote_via=urllib.parse.quote)
-        data = None
-        for attempt in range(3):
-            try:
-                data = http_get_json(f"{API_URL}?{params}", headers)
-                break
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                if attempt == 2:
-                    raise RuntimeError(f"Nie udało się pobrać danych z Encar: {e}")
-                time.sleep(5 * (attempt + 1))
+        if api_url is None:
+            api_url, data = find_endpoint(params, headers)
+            print(f"Używam adresu: {api_url}")
+        else:
+            data = get_with_retry(f"{api_url}?{params}", headers)
         results = data.get("SearchResults") or []
         total = data.get("Count", total)
         cars.extend(results)
