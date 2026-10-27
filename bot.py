@@ -179,6 +179,43 @@ def extract_results(text):
     return best, count
 
 
+def discover_api(page_url, html, headers, max_files=120):
+    """Przeszukuje skrypty strony i wypisuje adresy, z których strona może brać ogłoszenia."""
+    base = urllib.parse.urljoin(page_url, "/")
+    queue = [urllib.parse.urljoin(base, s) for s in re.findall(r'(?:src|href)="([^"]+\.js[^"]*)"', html)]
+    seen_files, urls, contexts = set(), set(), []
+    while queue and len(seen_files) < max_files:
+        js_url = queue.pop(0)
+        if js_url in seen_files or "googletagmanager" in js_url:
+            continue
+        seen_files.add(js_url)
+        try:
+            js = http_get_text(js_url, headers)
+        except Exception:
+            continue
+        # kolejne pliki ładowane dynamicznie (import("./Lista-abc123.js") itp.)
+        for rel in re.findall(r'["\'`]((?:\./|/assets/|assets/)[\w.\-/]+\.js)["\'`]', js):
+            nxt = urllib.parse.urljoin(js_url, rel)
+            if nxt not in seen_files:
+                queue.append(nxt)
+        for u in re.findall(r'https?://[\w.\-]*encar\.com[\w./\-?=&%{}$]*', js):
+            urls.add(u)
+        for p in re.findall(r'["\'`](/(?:search|v\d|api|car|list)[\w./\-?=&%{}$]*)["\'`]', js):
+            if not p.endswith((".js", ".css", ".png", ".svg", ".jpg")):
+                urls.add(p)
+        for m in re.finditer(r"SearchResults|/search/car|/list/", js):
+            ctx = js[max(0, m.start() - 160):m.end() + 160].replace("\n", " ")
+            if len(contexts) < 12 and ctx not in contexts:
+                contexts.append(ctx)
+    print(f"===== ADRESY ZNALEZIONE W SKRYPTACH ENCAR ({len(seen_files)} plików) =====")
+    for u in sorted(urls):
+        print(u)
+    print("===== FRAGMENTY KODU =====")
+    for c in contexts:
+        print("...", c, "...")
+    print("===== KONIEC =====")
+
+
 def fetch_from_page(search_url):
     headers = {
         "User-Agent": UA,
@@ -207,9 +244,10 @@ def fetch_from_page(search_url):
                 debug = os.path.join(HERE, "debug_page.html")
                 with open(debug, "w", encoding="utf-8") as f:
                     f.write(html)
-                print("----- POCZĄTEK ODPOWIEDZI ENCAR -----")
-                print(html[:2000])
-                print("----- KONIEC ODPOWIEDZI ENCAR -----")
+                try:
+                    discover_api(url, html, headers)
+                except Exception as e:
+                    print("Szukanie adresów API nie powiodło się:", e)
                 raise RuntimeError("nie znaleziono ogłoszeń w treści strony "
                                    f"(pobrano {len(html)} znaków, zapisano do debug_page.html)")
             break
