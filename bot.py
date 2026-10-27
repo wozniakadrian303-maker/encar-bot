@@ -207,6 +207,9 @@ def fetch_from_page(search_url):
                 debug = os.path.join(HERE, "debug_page.html")
                 with open(debug, "w", encoding="utf-8") as f:
                     f.write(html)
+                print("----- POCZĄTEK ODPOWIEDZI ENCAR -----")
+                print(html[:2000])
+                print("----- KONIEC ODPOWIEDZI ENCAR -----")
                 raise RuntimeError("nie znaleziono ogłoszeń w treści strony "
                                    f"(pobrano {len(html)} znaków, zapisano do debug_page.html)")
             break
